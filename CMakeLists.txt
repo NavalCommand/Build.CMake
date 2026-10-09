@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 4.2)
+cmake_policy(SET CMP0168 NEW)
+project(NavalCommand.Build.CMake LANGUAGES NONE)
+if(PROJECT_IS_TOP_LEVEL)
+  include(CTest)
+  add_subdirectory(test)
+endif()
