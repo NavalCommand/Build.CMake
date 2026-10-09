@@ -5,17 +5,17 @@ include(FetchContent)
 set(CMAKE_FIND_PACKAGE_TARGETS_GLOBAL TRUE)
 
 function(NavalCommandDependencyIdentity url identity fetchName)
-    string(REGEX REPLACE "\\.git/?$" "" canonical "${url}")
-    if(NOT canonical MATCHES "^https://github.com/([^/]+)/([^/]+)$")
+    string(REGEX REPLACE "\\.git/?$" "" canonicalUrl "${url}")
+    if(NOT canonicalUrl MATCHES "^https://github.com/([^/]+)/([^/]+)$")
         message(FATAL_ERROR "Expected a canonical GitHub repository URL: ${url}")
     endif()
-    string(TOLOWER "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}" id)
-    string(SHA256 hash "${id}")
-    # Names remain derived from full canonical identity, never caller aliases. Short names apply on
-    # every platform for consistent local registrations.
-    string(SUBSTRING "${hash}" 0 12 shortHash)
+    string(TOLOWER "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}" canonicalIdentity)
+    string(SHA256 identityHash "${canonicalIdentity}")
+    # Names remain derived from full canonical repository identity, never caller aliases. Short names apply
+    # on every platform for consistent local checkout registrations.
+    string(SUBSTRING "${identityHash}" 0 12 shortHash)
     set(${identity}
-        "${id}"
+        "${canonicalIdentity}"
         PARENT_SCOPE)
     set(${fetchName}
         "nc_${shortHash}"
@@ -23,69 +23,77 @@ function(NavalCommandDependencyIdentity url identity fetchName)
 endfunction()
 
 function(NavalCommandSetDependencyPath url path)
-    NavalCommandDependencyIdentity("${url}" id name)
-    get_filename_component(absolute "${path}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
-    if(NOT IS_DIRECTORY "${absolute}" OR NOT EXISTS "${absolute}/CMakeLists.txt")
-        message(FATAL_ERROR "Invalid explicit dependency path for ${id}: ${absolute}")
+    NavalCommandDependencyIdentity("${url}" canonicalIdentity fetchName)
+    get_filename_component(absoluteCheckoutPath "${path}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+    if(NOT IS_DIRECTORY "${absoluteCheckoutPath}" OR NOT EXISTS
+                                                     "${absoluteCheckoutPath}/CMakeLists.txt")
+        message(
+            FATAL_ERROR
+                "Invalid explicit dependency path for ${canonicalIdentity}: ${absoluteCheckoutPath}"
+        )
     endif()
-    file(REAL_PATH "${absolute}" absolute)
-    get_property(old GLOBAL PROPERTY "${name}_local")
-    if(old AND NOT old STREQUAL absolute)
-        message(FATAL_ERROR "Conflicting local dependency registrations for ${id}")
+    file(REAL_PATH "${absoluteCheckoutPath}" absoluteCheckoutPath)
+    get_property(previousLocalPath GLOBAL PROPERTY "${fetchName}_local")
+    if(previousLocalPath AND NOT previousLocalPath STREQUAL absoluteCheckoutPath)
+        message(FATAL_ERROR "Conflicting local dependency registrations for ${canonicalIdentity}")
     endif()
-    get_property(resolved GLOBAL PROPERTY "${name}_resolved")
-    if(resolved AND NOT old STREQUAL absolute)
-        message(FATAL_ERROR "Local override for ${id} must precede FetchContent_Declare")
+    get_property(alreadyResolved GLOBAL PROPERTY "${fetchName}_resolved")
+    if(alreadyResolved AND NOT previousLocalPath STREQUAL absoluteCheckoutPath)
+        message(
+            FATAL_ERROR "Local override for ${canonicalIdentity} must precede FetchContent_Declare")
     endif()
-    set_property(GLOBAL PROPERTY "${name}_local" "${absolute}")
+    set_property(GLOBAL PROPERTY "${fetchName}_local" "${absoluteCheckoutPath}")
 endfunction()
 
 function(NavalCommandAddDependency url tag)
-    NavalCommandDependencyIdentity("${url}" id name)
-    get_property(oldId GLOBAL PROPERTY "${name}_identity")
-    if(oldId AND NOT oldId STREQUAL id)
-        message(FATAL_ERROR "Hashed dependency identity collision: ${id}")
+    NavalCommandDependencyIdentity("${url}" canonicalIdentity fetchName)
+    get_property(previousIdentity GLOBAL PROPERTY "${fetchName}_identity")
+    if(previousIdentity AND NOT previousIdentity STREQUAL canonicalIdentity)
+        message(FATAL_ERROR "Hashed dependency identity collision: ${canonicalIdentity}")
     endif()
-    get_property(oldTag GLOBAL PROPERTY "${name}_tag")
-    if(oldTag AND NOT oldTag STREQUAL tag)
-        message(FATAL_ERROR "Conflicting Git references for ${id}: ${oldTag} versus ${tag}")
+    get_property(previousGitRef GLOBAL PROPERTY "${fetchName}_tag")
+    if(previousGitRef AND NOT previousGitRef STREQUAL tag)
+        message(
+            FATAL_ERROR
+                "Conflicting Git references for ${canonicalIdentity}: ${previousGitRef} versus ${tag}"
+        )
     endif()
-    get_property(resolved GLOBAL PROPERTY "${name}_resolved")
-    if(resolved)
+    get_property(alreadyResolved GLOBAL PROPERTY "${fetchName}_resolved")
+    if(alreadyResolved)
         return()
     endif()
-    set_property(GLOBAL PROPERTY "${name}_identity" "${id}")
-    set_property(GLOBAL PROPERTY "${name}_tag" "${tag}")
-    get_property(local GLOBAL PROPERTY "${name}_local")
-    if(local)
-        FetchContent_Declare(${name} SOURCE_DIR "${local}")
-        message(STATUS "NavalCommand dependency ${id} -> ${name} local ${local}")
+    set_property(GLOBAL PROPERTY "${fetchName}_identity" "${canonicalIdentity}")
+    set_property(GLOBAL PROPERTY "${fetchName}_tag" "${tag}")
+    get_property(localCheckoutPath GLOBAL PROPERTY "${fetchName}_local")
+    if(localCheckoutPath)
+        FetchContent_Declare(${fetchName} SOURCE_DIR "${localCheckoutPath}")
+        message(
+            STATUS
+                "NavalCommand dependency ${canonicalIdentity} -> ${fetchName} local ${localCheckoutPath}"
+        )
     else()
         FetchContent_Declare(
-            ${name}
+            ${fetchName}
             GIT_REPOSITORY "${url}"
             GIT_TAG "${tag}")
-        message(STATUS "NavalCommand dependency ${id} -> ${name} Git ${tag}")
+        message(STATUS "NavalCommand dependency ${canonicalIdentity} -> ${fetchName} Git ${tag}")
     endif()
     # Set before descent: repeated/cyclic requests never re-declare an identity.
-    set_property(GLOBAL PROPERTY "${name}_resolved" TRUE)
-    FetchContent_MakeAvailable(${name})
-    set_property(GLOBAL PROPERTY "${name}_source" "${${name}_SOURCE_DIR}")
+    set_property(GLOBAL PROPERTY "${fetchName}_resolved" TRUE)
+    FetchContent_MakeAvailable(${fetchName})
+    set_property(GLOBAL PROPERTY "${fetchName}_source" "${${fetchName}_SOURCE_DIR}")
     file(APPEND "${CMAKE_BINARY_DIR}/dependency-resolution.log"
-         "${id}|${tag}|${${name}_SOURCE_DIR}\n")
+         "${canonicalIdentity}|${tag}|${${fetchName}_SOURCE_DIR}\n")
 endfunction()
 
 function(NavalCommandGetDependencySource url output)
-    NavalCommandDependencyIdentity("${url}" id name)
-    get_property(
-        source
-        GLOBAL
-        PROPERTY "${name}_source")
-    if(NOT source)
-        message(FATAL_ERROR "Dependency has not been resolved: ${id}")
+    NavalCommandDependencyIdentity("${url}" canonicalIdentity fetchName)
+    get_property(dependencySource GLOBAL PROPERTY "${fetchName}_source")
+    if(NOT dependencySource)
+        message(FATAL_ERROR "Dependency has not been resolved: ${canonicalIdentity}")
     endif()
     set(${output}
-        "${source}"
+        "${dependencySource}"
         PARENT_SCOPE)
 endfunction()
 
@@ -109,8 +117,8 @@ function(NavalCommandConfigureTarget target)
         PROPERTIES CXX_STANDARD 26
                    CXX_STANDARD_REQUIRED YES
                    CXX_EXTENSIONS NO)
-    get_target_property(type ${target} TYPE)
-    if(type STREQUAL "INTERFACE_LIBRARY")
+    get_target_property(targetType ${target} TYPE)
+    if(targetType STREQUAL "INTERFACE_LIBRARY")
         return()
     endif()
     if(MSVC)

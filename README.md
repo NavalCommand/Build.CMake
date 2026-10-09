@@ -1,5 +1,8 @@
 # NavalCommand Build.CMake
 
+Project-wide documentation is maintained in the separate **Docs Git repository**. Before changing this module, explicitly read [Docs/AGENTS.md](../Docs/AGENTS.md), [architecture](../Docs/ARCHITECTURE.md), [module/build policy](../Docs/MODULE_STRUCTURE.md), [local sources](../Docs/LOCAL_SOURCES.md), and [code style](../Docs/CODE_STYLE.md) with its [owner export](../Docs/CodeStyle.xml). The shared instructions are not discovered automatically across repository boundaries; do not create a competing AGENTS.md in the parent workspace. Historical reports and reproduction guides are indexed under [Docs/Tasks/](../Docs/Tasks/README.md), with run receipts under [Docs/Evidence/](../Docs/Evidence/README.md).
+
+
 Shared build policy and canonical internal dependency resolution, modeled on [UnrealVoxelSim/ModuleTemplate](https://github.com/UnrealVoxelSim/ModuleTemplate) and [UnrealVoxelSim/Build.CMake](https://github.com/UnrealVoxelSim/Build.CMake). CMake 4.2+, Ninja, Git, vcpkg for external packages. No gameplay or runtime dependency.
 
 Native module roots initialize their project, FetchContent `ncbuild`, include `NavalCommand.Build.CMake.cmake`, declare dependencies, then call `NavalCommandConfigureModule()`. Production targets live in src, reusable mocks in mock, tests in test, executables in app, optional benchmarks in benchmark. Existing target names are retained for compatibility.

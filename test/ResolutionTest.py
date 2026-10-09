@@ -6,42 +6,44 @@ import subprocess
 import sys
 import tempfile
 
-cmake, build = sys.argv[1:]
-work = Path(tempfile.mkdtemp(prefix="naval-task005-resolver-")).resolve()
+cmake_executable, build_repository = sys.argv[1:]
+fixture_directory = Path(tempfile.mkdtemp(prefix="naval-task005-resolver-")).resolve()
 environment = os.environ.copy()
-config = work / "gitconfig"
-config.write_text(
-    f'[url "{(work / "repositories").as_uri()}/"]\n\tinsteadOf = https://github.com/NavalCommand/\n',
+git_config_path = fixture_directory / "gitconfig"
+git_config_path.write_text(
+    f'[url "{(fixture_directory / "repositories").as_uri()}/"]\n\tinsteadOf = https://github.com/NavalCommand/\n',
     encoding="utf-8",
 )
-environment.update(GIT_CONFIG_GLOBAL=str(config), GIT_CONFIG_NOSYSTEM="1")
+environment.update(GIT_CONFIG_GLOBAL=str(git_config_path), GIT_CONFIG_NOSYSTEM="1")
 
 
-def run(args, expected=0):
-    result = subprocess.run(args, capture_output=True, text=True, env=environment)
+def run(arguments, expected=0):
+    result = subprocess.run(arguments, capture_output=True, text=True, env=environment)
     if (result.returncode == 0) != (expected == 0):
-        raise RuntimeError(f"{args}\n{result.stdout}\n{result.stderr}")
+        raise RuntimeError(f"{arguments}\n{result.stdout}\n{result.stderr}")
     return result.stdout + result.stderr
 
 
-include = f'include("{Path(build).as_posix()}/NavalCommand.Build.CMake.cmake")\n'
-url_a = "https://github.com/NavalCommand/Fixture.A.git"
-url_b = "https://github.com/NavalCommand/Fixture.B.git"
+include = (
+    f'include("{Path(build_repository).as_posix()}/NavalCommand.Build.CMake.cmake")\n'
+)
+direct_dependency_url = "https://github.com/NavalCommand/Fixture.A.git"
+transitive_dependency_url = "https://github.com/NavalCommand/Fixture.B.git"
 header = "cmake_minimum_required(VERSION 4.2)\nproject(Fixture LANGUAGES NONE)\n"
 for name, body in [
     ("Fixture.B", 'file(WRITE "${CMAKE_BINARY_DIR}/b-marker" "git")\n'),
-    ("Fixture.A", f"NavalCommandAddDependency({url_b} main)\n"),
+    ("Fixture.A", f"NavalCommandAddDependency({transitive_dependency_url} main)\n"),
 ]:
-    repo = work / "repositories" / f"{name}.git"
-    repo.mkdir(parents=True)
-    (repo / "CMakeLists.txt").write_text(header + include + body)
-    run(["git", "init", "-b", "main", str(repo)])
-    run(["git", "-C", str(repo), "add", "."])
+    fixture_repository = fixture_directory / "repositories" / f"{name}.git"
+    fixture_repository.mkdir(parents=True)
+    (fixture_repository / "CMakeLists.txt").write_text(header + include + body)
+    run(["git", "init", "-b", "main", str(fixture_repository)])
+    run(["git", "-C", str(fixture_repository), "add", "."])
     run(
         [
             "git",
             "-C",
-            str(repo),
+            str(fixture_repository),
             "-c",
             "user.name=Resolver Test",
             "-c",
@@ -51,23 +53,27 @@ for name, body in [
             "Fixture",
         ]
     )
-local_b = work / "local-b"
-local_b.mkdir()
-(local_b / "CMakeLists.txt").write_text(
+local_transitive_repository = fixture_directory / "local-b"
+local_transitive_repository.mkdir()
+(local_transitive_repository / "CMakeLists.txt").write_text(
     header + 'file(WRITE "${CMAKE_BINARY_DIR}/b-marker" "local")\n'
 )
 
 
 def configure(name, registrations="", body="", expected=0):
-    source = work / name
+    source = fixture_directory / name
     source.mkdir()
     (source / "CMakeLists.txt").write_text(
-        header + include + body + f"NavalCommandAddDependency({url_a} main)\n"
+        header
+        + include
+        + body
+        + f"NavalCommandAddDependency({direct_dependency_url} main)\n"
     )
     if registrations:
         (source / "Build.Local.cmake").write_text(registrations)
     output = run(
-        [cmake, "-S", str(source), "-B", str(source / "o"), "-G", "Ninja"], expected
+        [cmake_executable, "-S", str(source), "-B", str(source / "o"), "-G", "Ninja"],
+        expected,
     )
     print(f"PASS {name}")
     return source, output
@@ -77,45 +83,51 @@ source, _ = configure("git-without-local")
 assert (source / "o/b-marker").read_text() == "git"
 entries = (source / "o/dependency-resolution.log").read_text()
 assert "fixture.a" in entries and "fixture.b" in entries
-names = [p.name for p in (source / "o/_deps").iterdir()]
-assert all(len(n.split("-")[0]) == 15 for n in names)
-assert not any("subbuild" in n for n in names)
+names = [dependency_path.name for dependency_path in (source / "o/_deps").iterdir()]
+assert all(len(dependency_name.split("-")[0]) == 15 for dependency_name in names)
+assert not any("subbuild" in dependency_name for dependency_name in names)
 print("PASS hashed names and CMP0168 NEW (no subbuild directories)")
 
-a_path = (work / "repositories/Fixture.A.git").as_posix()
-b_path = local_b.as_posix()
-register_a = f'NavalCommandSetDependencyPath({url_a} "{a_path}")\n'
-register_b = f'NavalCommandSetDependencyPath({url_b} "{b_path}")\n'
-source, _ = configure("direct-and-transitive-local", register_a + register_b)
+direct_checkout_path = (fixture_directory / "repositories/Fixture.A.git").as_posix()
+transitive_checkout_path = local_transitive_repository.as_posix()
+direct_registration = (
+    f'NavalCommandSetDependencyPath({direct_dependency_url} "{direct_checkout_path}")\n'
+)
+transitive_registration = f'NavalCommandSetDependencyPath({transitive_dependency_url} "{transitive_checkout_path}")\n'
+source, _ = configure(
+    "direct-and-transitive-local", direct_registration + transitive_registration
+)
 assert (source / "o/b-marker").read_text() == "local"
-source, _ = configure("git-direct-local-transitive", register_b)
+source, _ = configure("git-direct-local-transitive", transitive_registration)
 assert (source / "o/b-marker").read_text() == "local"
 configure(
     "invalid-explicit",
-    f'NavalCommandSetDependencyPath({url_a} "{work.as_posix()}/missing")\n',
+    f'NavalCommandSetDependencyPath({direct_dependency_url} "{fixture_directory.as_posix()}/missing")\n',
     expected=1,
 )
 _, output = configure(
     "conflict",
-    register_a + f'NavalCommandSetDependencyPath({url_a} "{b_path}")\n',
+    direct_registration
+    + f'NavalCommandSetDependencyPath({direct_dependency_url} "{transitive_checkout_path}")\n',
     expected=1,
 )
 assert "Conflicting local dependency registrations" in output
-configure("same-registration", register_a + register_a)
+configure("same-registration", direct_registration + direct_registration)
 _, output = configure(
     "late-registration",
-    body=f"NavalCommandAddDependency({url_a} main)\n" + register_a,
+    body=f"NavalCommandAddDependency({direct_dependency_url} main)\n"
+    + direct_registration,
     expected=1,
 )
 assert "must precede FetchContent_Declare" in output
 _, output = configure(
     "conflicting-tags",
-    body=f"NavalCommandAddDependency({url_a} main)\nNavalCommandAddDependency({url_a} other)\n",
+    body=f"NavalCommandAddDependency({direct_dependency_url} main)\nNavalCommandAddDependency({direct_dependency_url} other)\n",
     expected=1,
 )
 assert "Conflicting Git references" in output
 configure(
     "canonical-identity",
-    body=f"NavalCommandAddDependency({url_a} main)\nNavalCommandAddDependency(https://github.com/NavalCommand/Fixture.A main)\n",
+    body=f"NavalCommandAddDependency({direct_dependency_url} main)\nNavalCommandAddDependency(https://github.com/NavalCommand/Fixture.A main)\n",
 )
-print(f"RESOLUTION_PASS fixtures={work}")
+print(f"RESOLUTION_PASS fixtures={fixture_directory}")
