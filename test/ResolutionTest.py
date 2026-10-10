@@ -7,7 +7,9 @@ import sys
 import tempfile
 
 cmake_executable, build_repository = sys.argv[1:]
-fixture_directory = Path(tempfile.mkdtemp(prefix="naval-task005-resolver-")).resolve()
+fixture_root = Path(build_repository) / "o" / "resolver-tests"
+fixture_root.mkdir(parents=True, exist_ok=True)
+fixture_directory = Path(tempfile.mkdtemp(prefix="run-", dir=fixture_root)).resolve()
 environment = os.environ.copy()
 git_config_path = fixture_directory / "gitconfig"
 git_config_path.write_text(

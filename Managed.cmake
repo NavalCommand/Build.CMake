@@ -1,0 +1,87 @@
+include_guard(GLOBAL)
+set_property(GLOBAL APPEND PROPERTY JOB_POOLS navalcommand_managed=1)
+
+# The context is configuration independent: Debug/Release belongs to MSBuild.
+# Different consumers may share it only when all resolved inputs agree.
+function(NavalCommandManagedContext)
+    set(context "<Project>\n  <PropertyGroup>\n")
+    set(registrations "NavalCommandManagedTargets=${CMAKE_CURRENT_FUNCTION_LIST_DIR}/Managed.targets" ${ARGN})
+    foreach(registration IN LISTS registrations)
+        string(FIND "${registration}" "=" separator)
+        if(separator LESS 1)
+            message(FATAL_ERROR "Expected managed property Name=value: ${registration}")
+        endif()
+        string(SUBSTRING "${registration}" 0 ${separator} propertyName)
+        math(EXPR valueOffset "${separator} + 1")
+        string(SUBSTRING "${registration}" ${valueOffset} -1 propertyValue)
+        if(NOT propertyName MATCHES "^[A-Za-z][A-Za-z0-9_]*$")
+            message(FATAL_ERROR "Invalid managed property name: ${propertyName}")
+        endif()
+        string(REPLACE "&" "&amp;" propertyValue "${propertyValue}")
+        string(REPLACE "<" "&lt;" propertyValue "${propertyValue}")
+        string(REPLACE ">" "&gt;" propertyValue "${propertyValue}")
+        string(APPEND context "    <${propertyName}>${propertyValue}</${propertyName}>\n")
+    endforeach()
+    string(APPEND context "  </PropertyGroup>\n</Project>\n")
+    set(contextPath "${PROJECT_SOURCE_DIR}/o/managed/Build.Context.props")
+    if(EXISTS "${contextPath}")
+        file(READ "${contextPath}" previousContext)
+        if(NOT previousContext STREQUAL context AND NOT NAVALCOMMAND_REPLACE_MANAGED_CONTEXT)
+            message(FATAL_ERROR
+                "Managed context conflict in ${PROJECT_SOURCE_DIR}. Resolved sources/tools/SDK changed. "
+                "Close other builds and reconfigure with -DNAVALCOMMAND_REPLACE_MANAGED_CONTEXT=ON "
+                "to explicitly select this IDE context; reconfigure other consumers before building them.")
+        endif()
+    endif()
+    # Never rewrite an identical context: IDE evaluation and incremental builds stay stable.
+    if(NOT previousContext STREQUAL context)
+        file(WRITE "${contextPath}" "${context}")
+    endif()
+    set_property(DIRECTORY PROPERTY NAVALCOMMAND_MANAGED_CONTEXT "${context}")
+    set_property(GLOBAL APPEND PROPERTY NAVALCOMMAND_MANAGED_CONTEXT_PATHS "${contextPath}")
+endfunction()
+
+function(NavalCommandManagedProtoc output)
+    find_package(Protobuf CONFIG REQUIRED)
+    # protoc is a host tool, independent of the consumer's Debug/Release linkage.
+    foreach(configuration RELEASE RELWITHDEBINFO DEBUG)
+        get_target_property(protocPath protobuf::protoc "IMPORTED_LOCATION_${configuration}")
+        if(protocPath)
+            break()
+        endif()
+    endforeach()
+    if(NOT protocPath)
+        get_target_property(protocPath protobuf::protoc IMPORTED_LOCATION)
+    endif()
+    if(NOT EXISTS "${protocPath}")
+        message(FATAL_ERROR "The resolved protobuf package must supply an existing host protoc")
+    endif()
+    set(${output} "${protocPath}" PARENT_SCOPE)
+endfunction()
+
+function(NavalCommandAddManagedProject target projectPath)
+    find_program(NAVALCOMMAND_DOTNET dotnet REQUIRED)
+    get_filename_component(projectPath "${projectPath}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    get_property(context DIRECTORY PROPERTY NAVALCOMMAND_MANAGED_CONTEXT)
+    if(NOT context)
+        message(FATAL_ERROR "Register a managed context before projects in ${CMAKE_CURRENT_SOURCE_DIR}")
+    endif()
+    # CMake consumers use the same persisted context as direct IDE builds. A later
+    # conflicting configure cannot silently redirect an existing build tree.
+    get_property(contextPaths GLOBAL PROPERTY NAVALCOMMAND_MANAGED_CONTEXT_PATHS)
+    list(REMOVE_DUPLICATES contextPaths)
+    set(contextChecks)
+    foreach(contextPath IN LISTS contextPaths)
+        string(SHA256 contextIdentity "${contextPath}")
+        string(SUBSTRING "${contextIdentity}" 0 12 contextIdentity)
+        set(expectedContext "${CMAKE_CURRENT_BINARY_DIR}/contexts/${contextIdentity}.props")
+        configure_file("${contextPath}" "${expectedContext}" COPYONLY)
+        list(APPEND contextChecks COMMAND "${CMAKE_COMMAND}" -E compare_files "${expectedContext}" "${contextPath}")
+    endforeach()
+    add_custom_target(${target}
+        ${contextChecks}
+        COMMAND "${NAVALCOMMAND_DOTNET}" build "${projectPath}" --configuration "$<CONFIG>" --nologo
+        JOB_POOL navalcommand_managed
+        VERBATIM)
+    set_target_properties(${target} PROPERTIES NAVALCOMMAND_MANAGED_PROJECT "${projectPath}")
+endfunction()

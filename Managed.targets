@@ -1,0 +1,12 @@
+<Project>
+  <!-- MSBuild evaluates these paths, including NuGet and ProjectReference outputs. -->
+  <Target Name="RecordNavalCommandOutputs" AfterTargets="Build">
+    <WriteLinesToFile File="$(BaseOutputPath)$(Configuration)/TargetPath.txt"
+                      Lines="$(TargetPath)" Overwrite="true" />
+    <WriteLinesToFile File="$(BaseOutputPath)$(Configuration)/CopyLocalPaths.txt"
+                      Lines="@(ReferenceCopyLocalPaths->'%(FullPath)')" Overwrite="true" />
+    <WriteLinesToFile File="$(BaseOutputPath)$(Configuration)/ProtobufLicense.txt"
+                      Lines="$(PkgGoogle_Protobuf)/LICENSE" Overwrite="true"
+                      Condition="'$(PkgGoogle_Protobuf)' != ''" />
+  </Target>
+</Project>
